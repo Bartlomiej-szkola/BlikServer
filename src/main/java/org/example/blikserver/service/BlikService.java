@@ -80,7 +80,9 @@ public class BlikService {
 
         // KLIENT ZATWIERDZIŁ -> ŁĄCZYMY SIĘ Z BANKIEM NIEBIESKIM!
         try {
-            String url = BLUE_BANK_URL + "?accountNumber=" + tx.getAccountNumber() + "&amount=" + tx.getAmount();
+            String description = "Zakupy w: " + tx.getStoreName();
+            String url = BLUE_BANK_URL + "?accountNumber=" + tx.getAccountNumber() + "&amount=" + tx.getAmount() + "&description=" + description;
+
             ResponseEntity<String> response = restTemplate.postForEntity(url, null, String.class);
 
             if (response.getStatusCode().is2xxSuccessful()) {
