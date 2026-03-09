@@ -12,6 +12,17 @@ import java.time.LocalDateTime;
 import java.util.Optional;
 import java.util.Random;
 
+import org.example.blikserver.model.BlikStatus;
+import org.example.blikserver.model.BlikTransaction;
+import org.example.blikserver.repository.BlikRepository;
+import org.springframework.http.ResponseEntity;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.Optional;
+import java.util.Random;
+
 @Service
 public class BlikService {
 
@@ -24,6 +35,18 @@ public class BlikService {
     public BlikService(BlikRepository repository, RestTemplate restTemplate) {
         this.repository = repository;
         this.restTemplate = restTemplate;
+    }
+
+    // --- NOWOŚĆ: ROUTING DO ODPOWIEDNIEGO BANKU ---
+    private String getBankChargeUrl(String bankId) {
+        switch (bankId.toUpperCase()) {
+            case "BLUE_BANK":
+                return "http://localhost:8081/api/bank/charge"; // Bank Niebieski
+            case "PINK_BANK":
+                return "http://localhost:8083/api/bank/charge"; // Przyszły Bank Różowy (na porcie 8083)
+            default:
+                throw new IllegalArgumentException("Nieobsługiwany bank: " + bankId);
+        }
     }
 
     // 1. DLA APLIKACJI MOBILNEJ: Wygeneruj kod
@@ -67,22 +90,24 @@ public class BlikService {
     // 3. DLA APLIKACJI MOBILNEJ: Zatwierdź płatność
     public String authorizePayment(String accountNumber, boolean isApproved) {
         Optional<BlikTransaction> optTx = repository.findByAccountNumberAndStatus(accountNumber, BlikStatus.PENDING_AUTHORIZATION);
-
-        if (optTx.isEmpty()) return "Brak transakcji do zatwierdzenia";
+        if (optTx.isEmpty()) return "Brak transakcji";
 
         BlikTransaction tx = optTx.get();
 
         if (!isApproved) {
             tx.setStatus(BlikStatus.REJECTED);
             repository.save(tx);
-            return "Odrzucono transakcję";
+            return "Odrzucono";
         }
 
-        // KLIENT ZATWIERDZIŁ -> ŁĄCZYMY SIĘ Z BANKIEM NIEBIESKIM!
         try {
+            // POBIERAMY ADRES ZALEŻNIE OD TEGO, JAKI BANK WYGENEROWAŁ KOD
+            String bankBaseUrl = getBankChargeUrl(tx.getBankId());
             String description = "Zakupy w: " + tx.getStoreName();
-            String url = BLUE_BANK_URL + "?accountNumber=" + tx.getAccountNumber() + "&amount=" + tx.getAmount() + "&description=" + description;
 
+            String url = bankBaseUrl + "?accountNumber=" + tx.getAccountNumber() + "&amount=" + tx.getAmount() + "&description=" + description;
+
+            // Uderzamy do odpowiedniego banku!
             ResponseEntity<String> response = restTemplate.postForEntity(url, null, String.class);
 
             if (response.getStatusCode().is2xxSuccessful()) {
@@ -92,12 +117,12 @@ public class BlikService {
             } else {
                 tx.setStatus(BlikStatus.FAILED);
                 repository.save(tx);
-                return "Bank odrzucił transakcję (brak środków?)";
+                return "Bank odrzucił (brak środków)";
             }
         } catch (Exception e) {
             tx.setStatus(BlikStatus.FAILED);
             repository.save(tx);
-            return "Błąd komunikacji z bankiem: " + e.getMessage();
+            return "Błąd banku: " + e.getMessage();
         }
     }
 
