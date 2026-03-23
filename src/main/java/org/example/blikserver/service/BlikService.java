@@ -12,38 +12,24 @@ import java.time.LocalDateTime;
 import java.util.Optional;
 import java.util.Random;
 
-import org.example.blikserver.model.BlikStatus;
-import org.example.blikserver.model.BlikTransaction;
-import org.example.blikserver.repository.BlikRepository;
-import org.springframework.http.ResponseEntity;
-import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
-import java.math.BigDecimal;
-import java.time.LocalDateTime;
-import java.util.Optional;
-import java.util.Random;
-
 @Service
 public class BlikService {
 
     private final BlikRepository repository;
     private final RestTemplate restTemplate;
 
-    // Adres Banku Niebieskiego
-    private final String BLUE_BANK_URL = "http://localhost:8081/api/bank/charge";
-
     public BlikService(BlikRepository repository, RestTemplate restTemplate) {
         this.repository = repository;
         this.restTemplate = restTemplate;
     }
 
-    // --- NOWOŚĆ: ROUTING DO ODPOWIEDNIEGO BANKU ---
+    // --- ROUTING: TWOJE IP DLA RED_BANK, LOCALHOST DLA KOLEGÓW ---
     private String getBankChargeUrl(String bankId) {
         switch (bankId.toUpperCase()) {
             case "BLUE_BANK":
-                return "http://localhost:8081/api/bank/charge"; // Bank Niebieski
-            case "PINK_BANK":
-                return "http://localhost:8083/api/bank/charge"; // Przyszły Bank Różowy (na porcie 8083)
+                return "http://localhost:8081/api/bank/charge";
+            case "RED_BANK":
+                return "http://192.168.0.129:8083/api/bank/charge";
             default:
                 throw new IllegalArgumentException("Nieobsługiwany bank: " + bankId);
         }
@@ -59,7 +45,7 @@ public class BlikService {
         transaction.setBankId(bankId);
         transaction.setStatus(BlikStatus.ACTIVE);
         transaction.setCreatedAt(LocalDateTime.now());
-        transaction.setExpiresAt(LocalDateTime.now().plusMinutes(2)); // Ważny 2 minuty
+        transaction.setExpiresAt(LocalDateTime.now().plusMinutes(2));
 
         repository.save(transaction);
         return code;
@@ -78,13 +64,12 @@ public class BlikService {
             return "BŁĄD: Kod wygasł";
         }
 
-        // Ustawiamy kwotę i czekamy na autoryzację na telefonie
         tx.setAmount(amount);
         tx.setStoreName(storeName);
         tx.setStatus(BlikStatus.PENDING_AUTHORIZATION);
         repository.save(tx);
 
-        return "PENDING"; // Sygnał dla kasy, że ma czekać na klienta
+        return "PENDING";
     }
 
     // 3. DLA APLIKACJI MOBILNEJ: Zatwierdź płatność
@@ -101,13 +86,23 @@ public class BlikService {
         }
 
         try {
-            // POBIERAMY ADRES ZALEŻNIE OD TEGO, JAKI BANK WYGENEROWAŁ KOD
             String bankBaseUrl = getBankChargeUrl(tx.getBankId());
-            String description = "Zakupy w: " + tx.getStoreName();
 
-            String url = bankBaseUrl + "?accountNumber=" + tx.getAccountNumber() + "&amount=" + tx.getAmount() + "&description=" + description;
+            // --- BEZPIECZNA LOGIKA PARAMETRÓW ---
+            String url;
+            if ("RED_BANK".equalsIgnoreCase(tx.getBankId())) {
+                // Twój bank (Red Bank) używa 'storeName'
+                url = bankBaseUrl + "?accountNumber=" + tx.getAccountNumber() +
+                        "&amount=" + tx.getAmount() +
+                        "&storeName=" + tx.getStoreName();
+            } else {
+                // Bank kolegów (Blue Bank) używa 'description'
+                String description = "Zakupy w: " + tx.getStoreName();
+                url = bankBaseUrl + "?accountNumber=" + tx.getAccountNumber() +
+                        "&amount=" + tx.getAmount() +
+                        "&description=" + description;
+            }
 
-            // Uderzamy do odpowiedniego banku!
             ResponseEntity<String> response = restTemplate.postForEntity(url, null, String.class);
 
             if (response.getStatusCode().is2xxSuccessful()) {
@@ -128,7 +123,6 @@ public class BlikService {
 
     // 4. METODY POMOCNICZE
     public Optional<BlikTransaction> getStatus(String code) {
-        // Zwraca status dla kasy (Kasa będzie to odpytywać co sekundę)
         return repository.findByCodeAndStatus(code, BlikStatus.COMPLETED)
                 .or(() -> repository.findByCodeAndStatus(code, BlikStatus.REJECTED))
                 .or(() -> repository.findByCodeAndStatus(code, BlikStatus.FAILED))
@@ -136,7 +130,6 @@ public class BlikService {
     }
 
     public Optional<BlikTransaction> checkPending(String accountNumber) {
-        // Zwraca oczekującą transakcję dla telefonu (aby wyświetlić ekran akceptacji)
         return repository.findByAccountNumberAndStatus(accountNumber, BlikStatus.PENDING_AUTHORIZATION);
     }
 }
