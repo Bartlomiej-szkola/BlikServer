@@ -31,6 +31,16 @@ public class BlikController {
         return ResponseEntity.ok(blikService.initiatePayment(code, amount, storeName));
     }
 
+    @PostMapping("/transfer")
+    public ResponseEntity<String> transferToPhone(
+            @RequestParam String fromAccount,
+            @RequestParam String toPhone,
+            @RequestParam BigDecimal amount) {
+        // Wywołujemy logikę z serwisu
+        String result = blikService.transferToPhone(fromAccount, toPhone, amount);
+        return ResponseEntity.ok(result);
+    }
+
     // 3. Telefon sprawdza, czy ktoś wpisał jego kod w kasie (Wywoływane przez telefon co 2 sekundy)
     @GetMapping("/pending/{accountNumber}")
     public ResponseEntity<BlikTransaction> checkPending(@PathVariable String accountNumber) {

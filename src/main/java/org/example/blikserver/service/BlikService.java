@@ -12,22 +12,36 @@ import java.time.LocalDateTime;
 import java.util.Optional;
 import java.util.Random;
 
+import org.example.blikserver.model.BlikStatus;
+import org.example.blikserver.model.BlikTransaction;
+import org.example.blikserver.repository.BlikRepository;
+import org.springframework.http.ResponseEntity;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.Optional;
+import java.util.Random;
+
 @Service
 public class BlikService {
 
     private final BlikRepository repository;
     private final RestTemplate restTemplate;
 
+    // Adres Banku Niebieskiego
+    private final String BLUE_BANK_URL = "http://192.168.0.138:8081/api/bank/charge";
+
     public BlikService(BlikRepository repository, RestTemplate restTemplate) {
         this.repository = repository;
         this.restTemplate = restTemplate;
     }
 
-    // --- ROUTING: TWOJE IP DLA RED_BANK, LOCALHOST DLA KOLEGÓW ---
+    // --- NOWOŚĆ: ROUTING DO ODPOWIEDNIEGO BANKU ---
     private String getBankChargeUrl(String bankId) {
         switch (bankId.toUpperCase()) {
             case "BLUE_BANK":
-                return "http://localhost:8081/api/bank/charge";
+                return "http://192.168.0.138:8081/api/bank/charge"; // Bank Niebieski
             case "RED_BANK":
                 return "http://192.168.0.129:8083/api/bank/charge";
             default:
@@ -45,7 +59,7 @@ public class BlikService {
         transaction.setBankId(bankId);
         transaction.setStatus(BlikStatus.ACTIVE);
         transaction.setCreatedAt(LocalDateTime.now());
-        transaction.setExpiresAt(LocalDateTime.now().plusMinutes(2));
+        transaction.setExpiresAt(LocalDateTime.now().plusMinutes(2)); // Ważny 2 minuty
 
         repository.save(transaction);
         return code;
@@ -64,12 +78,61 @@ public class BlikService {
             return "BŁĄD: Kod wygasł";
         }
 
+        // Ustawiamy kwotę i czekamy na autoryzację na telefonie
         tx.setAmount(amount);
         tx.setStoreName(storeName);
         tx.setStatus(BlikStatus.PENDING_AUTHORIZATION);
         repository.save(tx);
 
-        return "PENDING";
+        return "PENDING"; // Sygnał dla kasy, że ma czekać na klienta
+    }
+
+    public String transferToPhone(String fromAccount, String toPhone, BigDecimal amount) {
+        try {
+            // 1. PYTAMY BANK: "Kto ma taki numer telefonu?"
+            String urlCheckPhone = "http://192.168.0.138:8081/api/bank/account/by-phone/" + toPhone;
+
+            // Próba pobrania numeru konta
+            ResponseEntity<String> response = restTemplate.getForEntity(urlCheckPhone, String.class);
+
+            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                String toAccount = response.getBody(); // Mamy numer konta odbiorcy!
+
+                // 2. ZLECAMY PRZELEW: Wykorzystujemy istniejący endpoint /charge w Banku
+                String description = "Przelew BLIK na telefon: " + toPhone;
+
+                // Budujemy URL do obciążenia konta nadawcy
+                String urlCharge = "http://192.168.0.138:8081/api/bank/charge" +
+                        "?accountNumber=" + fromAccount +
+                        "&amount=" + amount +
+                        "&description=" + description;
+
+                ResponseEntity<String> chargeResponse = restTemplate.postForEntity(urlCharge, null, String.class);
+
+                if (chargeResponse.getStatusCode().is2xxSuccessful()) {
+                    // Tutaj opcjonalnie: można by dodać drugie wywołanie do banku,
+                    // aby wpłacić pieniądze na konto 'toAccount',
+                    // ale na potrzeby Twojego symulatora /charge nadawcy wystarczy.
+                    return "SUCCESS";
+                } else {
+                    return "BŁĄD: Bank odrzucił płatność brak - środków na koncie.";
+                }
+            } else {
+                return "BŁĄD: Serwer banku zwrócił pustą odpowiedź.";
+            }
+
+        } catch (org.springframework.web.client.HttpClientErrorException.NotFound e) {
+            // Obsługa błędu 404 - gdy numeru telefonu nie ma w bazie banku
+            return "Odbiorca o numerze " + toPhone + " nie jest zarejestrowany w usłudze BLIK.";
+
+        } catch (org.springframework.web.client.HttpClientErrorException.BadRequest e) {
+            // Obsługa błędu 400 - np. błędy walidacji kwoty
+            return "BŁĄD: Niepoprawne dane przelewu.";
+
+        } catch (Exception e) {
+            // Obsługa wszystkich innych błędów (np. serwer banku jest wyłączony)
+            return "BŁĄD POŁĄCZENIA: " + e.getMessage();
+        }
     }
 
     // 3. DLA APLIKACJI MOBILNEJ: Zatwierdź płatność
@@ -86,23 +149,23 @@ public class BlikService {
         }
 
         try {
+            // POBIERAMY ADRES ZALEŻNIE OD TEGO, JAKI BANK WYGENEROWAŁ KOD
             String bankBaseUrl = getBankChargeUrl(tx.getBankId());
+            String description = "Zakupy w: " + tx.getStoreName();
 
-            // --- BEZPIECZNA LOGIKA PARAMETRÓW ---
             String url;
             if ("RED_BANK".equalsIgnoreCase(tx.getBankId())) {
                 // Twój bank (Red Bank) używa 'storeName'
                 url = bankBaseUrl + "?accountNumber=" + tx.getAccountNumber() +
                         "&amount=" + tx.getAmount() +
                         "&storeName=" + tx.getStoreName();
-            } else {
-                // Bank kolegów (Blue Bank) używa 'description'
-                String description = "Zakupy w: " + tx.getStoreName();
-                url = bankBaseUrl + "?accountNumber=" + tx.getAccountNumber() +
-                        "&amount=" + tx.getAmount() +
-                        "&description=" + description;
+            }
+            else {
+                url = bankBaseUrl + "?accountNumber=" + tx.getAccountNumber() + "&amount=" + tx.getAmount() + "&description=" + description;
             }
 
+
+            // Uderzamy do odpowiedniego banku!
             ResponseEntity<String> response = restTemplate.postForEntity(url, null, String.class);
 
             if (response.getStatusCode().is2xxSuccessful()) {
@@ -123,6 +186,7 @@ public class BlikService {
 
     // 4. METODY POMOCNICZE
     public Optional<BlikTransaction> getStatus(String code) {
+        // Zwraca status dla kasy (Kasa będzie to odpytywać co sekundę)
         return repository.findByCodeAndStatus(code, BlikStatus.COMPLETED)
                 .or(() -> repository.findByCodeAndStatus(code, BlikStatus.REJECTED))
                 .or(() -> repository.findByCodeAndStatus(code, BlikStatus.FAILED))
@@ -130,6 +194,7 @@ public class BlikService {
     }
 
     public Optional<BlikTransaction> checkPending(String accountNumber) {
+        // Zwraca oczekującą transakcję dla telefonu (aby wyświetlić ekran akceptacji)
         return repository.findByAccountNumberAndStatus(accountNumber, BlikStatus.PENDING_AUTHORIZATION);
     }
 }
