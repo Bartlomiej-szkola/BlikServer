@@ -30,7 +30,7 @@ public class BlikService {
     private final RestTemplate restTemplate;
 
     // Adres Banku Niebieskiego
-    private final String BLUE_BANK_URL = "http://192.168.0.138:8081/api/bank/charge";
+    private final String BLUE_BANK_URL = "http://192.168.0.173:8081/api/bank/charge";
 
     public BlikService(BlikRepository repository, RestTemplate restTemplate) {
         this.repository = repository;
@@ -41,7 +41,7 @@ public class BlikService {
     private String getBankChargeUrl(String bankId) {
         switch (bankId.toUpperCase()) {
             case "BLUE_BANK":
-                return "http://192.168.0.138:8081/api/bank/charge"; // Bank Niebieski
+                return "http://192.168.0.173:8081/api/bank/charge"; // Bank Niebieski
             case "RED_BANK":
                 return "http://192.168.0.129:8083/api/bank/charge";
             default:
@@ -90,7 +90,7 @@ public class BlikService {
     public String transferToPhone(String fromAccount, String toPhone, BigDecimal amount) {
         try {
             // 1. PYTAMY BANK: "Kto ma taki numer telefonu?"
-            String urlCheckPhone = "http://192.168.0.138:8081/api/bank/account/by-phone/" + toPhone;
+            String urlCheckPhone = "http://192.168.0.173:8081/api/bank/account/by-phone/" + toPhone;
 
             // Próba pobrania numeru konta
             ResponseEntity<String> response = restTemplate.getForEntity(urlCheckPhone, String.class);
@@ -102,7 +102,7 @@ public class BlikService {
                 String description = "Przelew BLIK na telefon: " + toPhone;
 
                 // Budujemy URL do obciążenia konta nadawcy
-                String urlCharge = "http://192.168.0.138:8081/api/bank/charge" +
+                String urlCharge = "http://192.168.0.173:8081/api/bank/charge" +
                         "?accountNumber=" + fromAccount +
                         "&amount=" + amount +
                         "&description=" + description;
@@ -110,9 +110,14 @@ public class BlikService {
                 ResponseEntity<String> chargeResponse = restTemplate.postForEntity(urlCharge, null, String.class);
 
                 if (chargeResponse.getStatusCode().is2xxSuccessful()) {
-                    // Tutaj opcjonalnie: można by dodać drugie wywołanie do banku,
-                    // aby wpłacić pieniądze na konto 'toAccount',
-                    // ale na potrzeby Twojego symulatora /charge nadawcy wystarczy.
+                    // SUKCES POBRANIA - TERAZ WPŁACAMY ODBIORCY:
+                    String depositUrl = "http://192.168.0.173:8081/api/bank/deposit" +
+                            "?accountNumber=" + toAccount +
+                            "&amount=" + amount +
+                            "&description=Przelew od telefonu: " + fromAccount; // Uproszczenie na potrzeby testów
+
+                    restTemplate.postForEntity(depositUrl, null, String.class);
+
                     return "SUCCESS";
                 } else {
                     return "BŁĄD: Bank odrzucił płatność brak - środków na koncie.";
