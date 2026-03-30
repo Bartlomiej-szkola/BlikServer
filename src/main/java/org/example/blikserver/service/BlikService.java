@@ -3,6 +3,7 @@ package org.example.blikserver.service;
 import org.example.blikserver.model.BlikStatus;
 import org.example.blikserver.model.BlikTransaction;
 import org.example.blikserver.repository.BlikRepository;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
@@ -30,7 +31,8 @@ public class BlikService {
     private final RestTemplate restTemplate;
 
     // Adres Banku Niebieskiego
-    private final String BLUE_BANK_URL = "http://192.168.0.173:8081/api/bank/charge";
+    @Value("${blik.server.url}")
+    private String BLUE_BANK_URL;
 
     public BlikService(BlikRepository repository, RestTemplate restTemplate) {
         this.repository = repository;
@@ -41,7 +43,7 @@ public class BlikService {
     private String getBankChargeUrl(String bankId) {
         switch (bankId.toUpperCase()) {
             case "BLUE_BANK":
-                return "http://192.168.0.173:8081/api/bank/charge"; // Bank Niebieski
+                return BLUE_BANK_URL; // Bank Niebieski
             case "RED_BANK":
                 return "http://192.168.0.129:8083/api/bank/charge";
             default:
