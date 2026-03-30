@@ -12,16 +12,7 @@ import java.time.LocalDateTime;
 import java.util.Optional;
 import java.util.Random;
 
-import org.example.blikserver.model.BlikStatus;
-import org.example.blikserver.model.BlikTransaction;
-import org.example.blikserver.repository.BlikRepository;
-import org.springframework.http.ResponseEntity;
-import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
-import java.math.BigDecimal;
-import java.time.LocalDateTime;
-import java.util.Optional;
-import java.util.Random;
+import org.springframework.beans.factory.annotation.Value;
 
 @Service
 public class BlikService {
@@ -29,21 +20,23 @@ public class BlikService {
     private final BlikRepository repository;
     private final RestTemplate restTemplate;
 
-    // Adres Banku Niebieskiego
-    private final String BLUE_BANK_URL = "http://192.168.0.173:8081/api/bank/charge";
+    private final String bluebank_url;
+    private final String redbank_url;
 
-    public BlikService(BlikRepository repository, RestTemplate restTemplate) {
+    public BlikService(BlikRepository repository, RestTemplate restTemplate, @Value("${bluebank.url}") String bluebank_url, @Value("${redbank.url}") String redbank_url) {
         this.repository = repository;
         this.restTemplate = restTemplate;
+        this.bluebank_url = bluebank_url;
+        this.redbank_url = redbank_url;
     }
 
     // --- NOWOŚĆ: ROUTING DO ODPOWIEDNIEGO BANKU ---
     private String getBankChargeUrl(String bankId) {
         switch (bankId.toUpperCase()) {
             case "BLUE_BANK":
-                return "http://192.168.0.173:8081/api/bank/charge"; // Bank Niebieski
+                return bluebank_url; // Bank Niebieski
             case "RED_BANK":
-                return "http://192.168.0.129:8083/api/bank/charge";
+                return redbank_url;
             default:
                 throw new IllegalArgumentException("Nieobsługiwany bank: " + bankId);
         }
@@ -87,10 +80,13 @@ public class BlikService {
         return "PENDING"; // Sygnał dla kasy, że ma czekać na klienta
     }
 
+    // FUNKCJA DZIALA TYLKO DLA BLUEBANK!
+    // FIXME Obsluga innych bankow!
+    // HARDCODE DLA BLUEBANK
     public String transferToPhone(String fromAccount, String toPhone, BigDecimal amount) {
         try {
             // 1. PYTAMY BANK: "Kto ma taki numer telefonu?"
-            String urlCheckPhone = "http://192.168.0.173:8081/api/bank/account/by-phone/" + toPhone;
+            String urlCheckPhone = bluebank_url + "/account/by-phone/" + toPhone;
 
             // Próba pobrania numeru konta
             ResponseEntity<String> response = restTemplate.getForEntity(urlCheckPhone, String.class);
@@ -102,7 +98,7 @@ public class BlikService {
                 String description = "Przelew BLIK na telefon: " + toPhone;
 
                 // Budujemy URL do obciążenia konta nadawcy
-                String urlCharge = "http://192.168.0.173:8081/api/bank/charge" +
+                String urlCharge = bluebank_url + "/charge" +
                         "?accountNumber=" + fromAccount +
                         "&amount=" + amount +
                         "&description=" + description;
@@ -111,7 +107,7 @@ public class BlikService {
 
                 if (chargeResponse.getStatusCode().is2xxSuccessful()) {
                     // SUKCES POBRANIA - TERAZ WPŁACAMY ODBIORCY:
-                    String depositUrl = "http://192.168.0.173:8081/api/bank/deposit" +
+                    String depositUrl = bluebank_url + "/deposit" +
                             "?accountNumber=" + toAccount +
                             "&amount=" + amount +
                             "&description=Przelew od telefonu: " + fromAccount; // Uproszczenie na potrzeby testów
@@ -161,12 +157,12 @@ public class BlikService {
             String url;
             if ("RED_BANK".equalsIgnoreCase(tx.getBankId())) {
                 // Twój bank (Red Bank) używa 'storeName'
-                url = bankBaseUrl + "?accountNumber=" + tx.getAccountNumber() +
+                url = bankBaseUrl + "/charge?accountNumber=" + tx.getAccountNumber() +
                         "&amount=" + tx.getAmount() +
                         "&storeName=" + tx.getStoreName();
             }
             else {
-                url = bankBaseUrl + "?accountNumber=" + tx.getAccountNumber() + "&amount=" + tx.getAmount() + "&description=" + description;
+                url = bankBaseUrl + "/charge?accountNumber=" + tx.getAccountNumber() + "&amount=" + tx.getAmount() + "&description=" + description;
             }
 
 
