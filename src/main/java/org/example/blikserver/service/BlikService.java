@@ -11,6 +11,7 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Optional;
 import java.util.Random;
+import java.util.concurrent.CompletableFuture;
 
 import org.springframework.beans.factory.annotation.Value;
 
@@ -80,40 +81,41 @@ public class BlikService {
         return "PENDING"; // Sygnał dla kasy, że ma czekać na klienta
     }
 
-    // FUNKCJA DZIALA TYLKO DLA BLUEBANK!
-    // FIXME Obsluga innych bankow!
-    // HARDCODE DLA BLUEBANK
-    public String transferToPhone(String fromAccount, String toPhone, BigDecimal amount) {
+    public String transferToPhone(String fromAccount, String toPhone, BigDecimal amount, String bankId) {
         try {
-            // 1. PYTAMY BANK: "Kto ma taki numer telefonu?"
-            String urlCheckPhone = bluebank_url + "/account/by-phone/" + toPhone;
+            String bankBaseUrl = getBankChargeUrl(bankId);
 
-            // Próba pobrania numeru konta
+            // 1. PYTAMY BANK: "Kto ma taki numer telefonu?"
+            String urlCheckPhone = bankBaseUrl + "/account/by-phone/" + toPhone;
             ResponseEntity<String> response = restTemplate.getForEntity(urlCheckPhone, String.class);
 
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                String toAccount = response.getBody(); // Mamy numer konta odbiorcy!
+                String toAccount = response.getBody();
 
-                // 2. ZLECAMY PRZELEW: Wykorzystujemy istniejący endpoint /charge w Banku
-                String description = "Przelew BLIK na telefon: " + toPhone;
-
-                // Budujemy URL do obciążenia konta nadawcy
-                String urlCharge = bluebank_url + "/charge" +
-                        "?accountNumber=" + fromAccount +
-                        "&amount=" + amount +
-                        "&description=" + description;
+                // 2. OBCIĄŻAMY KONTO NADAWCY
+                String urlCharge;
+                String urlDeposit;
+                if ("RED_BANK".equalsIgnoreCase(bankId)) {
+                    urlCharge = bankBaseUrl + "/charge?accountNumber=" + fromAccount +
+                            "&amount=" + amount +
+                            "&storeName=Przelew BLIK na telefon: " + toPhone;
+                    urlDeposit = bankBaseUrl + "/deposit?accountNumber=" + toAccount +
+                            "&amount=" + amount +
+                            "&storeName=Przelew od: " + fromAccount;
+                } else {
+                    urlCharge = bankBaseUrl + "/charge?accountNumber=" + fromAccount +
+                            "&amount=" + amount +
+                            "&description=Przelew BLIK na telefon: " + toPhone;
+                    urlDeposit = bankBaseUrl + "/deposit?accountNumber=" + toAccount +
+                            "&amount=" + amount +
+                            "&description=Przelew od telefonu: " + fromAccount;
+                }
 
                 ResponseEntity<String> chargeResponse = restTemplate.postForEntity(urlCharge, null, String.class);
 
                 if (chargeResponse.getStatusCode().is2xxSuccessful()) {
-                    // SUKCES POBRANIA - TERAZ WPŁACAMY ODBIORCY:
-                    String depositUrl = bluebank_url + "/deposit" +
-                            "?accountNumber=" + toAccount +
-                            "&amount=" + amount +
-                            "&description=Przelew od telefonu: " + fromAccount; // Uproszczenie na potrzeby testów
-
-                    restTemplate.postForEntity(depositUrl, null, String.class);
-
+                    // 3. WPŁACAMY ODBIORCY
+                    restTemplate.postForEntity(urlDeposit, null, String.class);
                     return "SUCCESS";
                 } else {
                     return "BŁĄD: Bank odrzucił płatność brak - środków na koncie.";
@@ -123,15 +125,12 @@ public class BlikService {
             }
 
         } catch (org.springframework.web.client.HttpClientErrorException.NotFound e) {
-            // Obsługa błędu 404 - gdy numeru telefonu nie ma w bazie banku
             return "Odbiorca o numerze " + toPhone + " nie jest zarejestrowany w usłudze BLIK.";
 
         } catch (org.springframework.web.client.HttpClientErrorException.BadRequest e) {
-            // Obsługa błędu 400 - np. błędy walidacji kwoty
             return "BŁĄD: Niepoprawne dane przelewu.";
 
         } catch (Exception e) {
-            // Obsługa wszystkich innych błędów (np. serwer banku jest wyłączony)
             return "BŁĄD POŁĄCZENIA: " + e.getMessage();
         }
     }
@@ -149,40 +148,42 @@ public class BlikService {
             return "Odrzucono";
         }
 
-        try {
-            // POBIERAMY ADRES ZALEŻNIE OD TEGO, JAKI BANK WYGENEROWAŁ KOD
-            String bankBaseUrl = getBankChargeUrl(tx.getBankId());
-            String description = "Zakupy w: " + tx.getStoreName();
-
-            String url;
-            if ("RED_BANK".equalsIgnoreCase(tx.getBankId())) {
-                // Twój bank (Red Bank) używa 'storeName'
-                url = bankBaseUrl + "/charge?accountNumber=" + tx.getAccountNumber() +
-                        "&amount=" + tx.getAmount() +
-                        "&storeName=" + tx.getStoreName();
-            }
-            else {
-                url = bankBaseUrl + "/charge?accountNumber=" + tx.getAccountNumber() + "&amount=" + tx.getAmount() + "&description=" + description;
-            }
-
-
-            // Uderzamy do odpowiedniego banku!
-            ResponseEntity<String> response = restTemplate.postForEntity(url, null, String.class);
-
-            if (response.getStatusCode().is2xxSuccessful()) {
-                tx.setStatus(BlikStatus.COMPLETED);
-                repository.save(tx);
-                return "Płatność zakończona sukcesem!";
-            } else {
-                tx.setStatus(BlikStatus.FAILED);
-                repository.save(tx);
-                return "Bank odrzucił (brak środków)";
-            }
-        } catch (Exception e) {
-            tx.setStatus(BlikStatus.FAILED);
-            repository.save(tx);
-            return "Błąd banku: " + e.getMessage();
+        // Budujemy URL przed wejściem w wątek async (unikamy lazy-loading JPA)
+        String bankBaseUrl = getBankChargeUrl(tx.getBankId());
+        String description = "Zakupy w: " + tx.getStoreName();
+        final String url;
+        if ("RED_BANK".equalsIgnoreCase(tx.getBankId())) {
+            url = bankBaseUrl + "/charge?accountNumber=" + tx.getAccountNumber() +
+                    "&amount=" + tx.getAmount() +
+                    "&storeName=" + tx.getStoreName();
+        } else {
+            url = bankBaseUrl + "/charge?accountNumber=" + tx.getAccountNumber() +
+                    "&amount=" + tx.getAmount() +
+                    "&description=" + description;
         }
+
+        final Long txId = tx.getId();
+
+        // Żądanie do banku w tle — endpoint /authorize odpowiada natychmiast
+        CompletableFuture.runAsync(() -> {
+            try {
+                ResponseEntity<String> response = restTemplate.postForEntity(url, null, String.class);
+                BlikStatus newStatus = response.getStatusCode().is2xxSuccessful()
+                        ? BlikStatus.COMPLETED
+                        : BlikStatus.FAILED;
+                repository.findById(txId).ifPresent(t -> {
+                    t.setStatus(newStatus);
+                    repository.save(t);
+                });
+            } catch (Exception e) {
+                repository.findById(txId).ifPresent(t -> {
+                    t.setStatus(BlikStatus.FAILED);
+                    repository.save(t);
+                });
+            }
+        });
+
+        return "Autoryzacja przyjęta";
     }
 
     // 4. METODY POMOCNICZE

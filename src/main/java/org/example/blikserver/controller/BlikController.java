@@ -35,9 +35,9 @@ public class BlikController {
     public ResponseEntity<String> transferToPhone(
             @RequestParam String fromAccount,
             @RequestParam String toPhone,
-            @RequestParam BigDecimal amount) {
-        // Wywołujemy logikę z serwisu
-        String result = blikService.transferToPhone(fromAccount, toPhone, amount);
+            @RequestParam BigDecimal amount,
+            @RequestParam String bankId) {
+        String result = blikService.transferToPhone(fromAccount, toPhone, amount, bankId);
         return ResponseEntity.ok(result);
     }
 
